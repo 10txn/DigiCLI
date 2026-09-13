@@ -1,0 +1,9 @@
+# Build output
+digicli
+dist/
+
+# Release instructions
+RELEASING.md
+
+# macOS
+.DS_Store
