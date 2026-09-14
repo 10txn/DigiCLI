@@ -1,6 +1,6 @@
 # Build output
-digicli
-dist/
+/digicli
+/dist/
 
 # Release instructions
 RELEASING.md
