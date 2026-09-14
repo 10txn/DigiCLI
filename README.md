@@ -11,8 +11,7 @@ DigiCLI is a open source, agentic coding cli designed to be a better alternative
 
 ```bash
 # Install
-brew tap 10txn/digicli
-brew install digicli
+brew tap 10txn/digicli && brew install digicli
 ```
 
 # Start
