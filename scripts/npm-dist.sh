@@ -22,8 +22,10 @@ VERSION=${TAG#v}   # npm versions are bare semver, no leading v
 case $VERSION in
 *-dirty | *[0-9]-g[0-9a-f]*)
 	echo "npm-dist: \"$TAG\" is a git-describe version, not a release tag." >&2
-	echo "  tag the commit first, or name the version explicitly:" >&2
-	echo "    make npm-dist VERSION=v0.1.2" >&2
+	echo "  Name the version explicitly, keeping whichever target you ran:" >&2
+	echo "    make npm-dist    VERSION=${TAG%%-*}" >&2
+	echo "    make npm-publish VERSION=${TAG%%-*}" >&2
+	echo "  A clean checkout of the tagged commit needs no VERSION at all." >&2
 	exit 1
 	;;
 esac
@@ -36,6 +38,14 @@ fi
 DIST=dist
 OUT=$DIST/npm
 SCOPE=@digicli
+
+# The wrapper is scoped because the bare name is unclaimable: npm strips
+# punctuation before comparing names, so "digicli" collides with "digi-cli"
+# (published 2022, abandoned) and the registry rejects it with a 403. Scoped
+# names skip that check. The directory stays "digicli" — npm-publish.sh keys
+# the publish order off it, and the installed command is still digicli either
+# way, since that comes from "bin" and not from the package name.
+WRAPPER=$SCOPE/cli
 
 # go-target:npm-os:npm-cpu — one platform package each.
 PLATFORMS=(
@@ -110,7 +120,7 @@ cp README.md "$OUT/digicli/README.md"
 
 cat >"$OUT/digicli/package.json" <<JSON
 {
-  "name": "digicli",
+  "name": "$WRAPPER",
   "version": "$VERSION",
   "description": "A local-first agentic coding assistant for the terminal.",
   "keywords": ["cli", "ai", "agent", "coding-assistant", "ollama", "tui", "local"],

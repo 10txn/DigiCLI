@@ -63,7 +63,7 @@ to start DigiCLI run it with the `digicli` command in any directory
 ## Architecture
 
 - **Terminal UI** — Bubble Tea (TUI framework)
-- **LLM Integration** — Ollama is currently the only supported platform. This will be expanded soon
+- **LLM Integration** — Ollama is currently the only LLM supported. This will be expanded soon
 - **File Operations** — Read and list behind a sandbox that resolves symlinks and rejects any path escaping the start directory
 - **State Management** — Mode tracking, chat history, configuration
 

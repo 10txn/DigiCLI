@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 "use strict";
 
-// This file is the whole npm package. `digicli` itself ships no binary: the
-// real Go executables live in one @digicli/<platform> package each, listed as
-// optionalDependencies and gated by "os"/"cpu", so npm installs exactly the one
-// that matches the machine and skips the rest. All this shim does is find it
-// and hand over the terminal.
+// This file is the whole npm package. `@digicli/cli` itself ships no binary:
+// the real Go executables live in one @digicli/<platform> package each, listed
+// as optionalDependencies and gated by "os"/"cpu", so npm installs exactly the
+// one that matches the machine and skips the rest. All this shim does is find
+// it and hand over the terminal.
 
 const { spawnSync } = require("node:child_process");
 
@@ -20,7 +20,7 @@ try {
 		`digicli: no binary installed for ${target}.\n\n` +
 			"If this is a supported platform (macOS, Linux, or Windows on x64 or\n" +
 			"arm64), the optional dependency was skipped — reinstall with:\n\n" +
-			"  npm install -g digicli --force\n\n" +
+			"  npm install -g @digicli/cli --force\n\n" +
 			"Otherwise build from source: https://github.com/10txn/digicli",
 	);
 	process.exit(1);

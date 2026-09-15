@@ -74,15 +74,9 @@ npm-check: npm-dist
 		(cd $$pkg && npm publish --dry-run --access public --tag $(NPM_TAG)); \
 	done
 
-# Platform packages first — the wrapper depends on them by exact version, so
-# publishing it first leaves a window where `npm i -g digicli` cannot resolve.
+# Ordered, and safe to re-run if a 2FA prompt is abandoned partway through.
 npm-publish: npm-dist
-	@for pkg in $(DIST)/npm/*/; do \
-		case $$pkg in */npm/digicli/) continue;; esac; \
-		(cd $$pkg && npm publish --access public --tag $(NPM_TAG)); \
-	done
-	@cd $(DIST)/npm/digicli && npm publish --access public --tag $(NPM_TAG)
-	@echo "published digicli $(VERSION) — verify with: npm i -g digicli && digicli --version"
+	@scripts/npm-publish.sh $(NPM_TAG)
 
 # Point the Homebrew formula at a tag. The tag has to be pushed first: the
 # checksum is of GitHub's source tarball for it, which does not exist until
