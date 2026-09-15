@@ -22,7 +22,12 @@ func testModel(t *testing.T, w, h int) *Model {
 	t.Helper()
 	t.Setenv("DIGICLI_HOME", t.TempDir())
 
-	m := New(config.New())
+	cfg := config.New()
+	// Otherwise every model starts on the first-run update prompt, which is
+	// its own view and has its own test below.
+	cfg.UpdatePrompted = true
+
+	m := New(cfg, "v0.1.2")
 	m.resize(w, h)
 	return m
 }
@@ -54,6 +59,32 @@ func TestViewNeverExceedsWidth(t *testing.T) {
 		for i, line := range strings.Split(m.View(), "\n") {
 			if got := lipgloss.Width(line); got > size.w {
 				t.Errorf("%dx%d: line %d is %d columns, want <= %d",
+					size.w, size.h, i, got, size.w)
+			}
+		}
+	}
+}
+
+// TestConsentViewFitsTerminal holds the first-run update prompt to the same
+// contract. It is the first thing a new user sees, so it has to fit whatever
+// terminal they see it in.
+func TestConsentViewFitsTerminal(t *testing.T) {
+	for _, size := range sizes {
+		t.Setenv("DIGICLI_HOME", t.TempDir())
+
+		m := New(config.New(), "v0.1.2") // an unanswered config: the prompt
+		m.resize(size.w, size.h)
+		if m.view != viewUpdateConsent {
+			t.Fatal("a config that has never been asked should open on the prompt")
+		}
+
+		view := m.View()
+		if got := lipgloss.Height(view); got != size.h {
+			t.Errorf("%dx%d: consent is %d lines, want %d", size.w, size.h, got, size.h)
+		}
+		for i, line := range strings.Split(view, "\n") {
+			if got := lipgloss.Width(line); got > size.w {
+				t.Errorf("%dx%d: consent line %d is %d columns, want <= %d",
 					size.w, size.h, i, got, size.w)
 			}
 		}

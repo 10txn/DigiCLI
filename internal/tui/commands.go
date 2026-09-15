@@ -69,6 +69,12 @@ func init() {
 			Run:     cmdClear,
 		},
 		{
+			Name:    "update",
+			Usage:   "/update",
+			Summary: "Check for a new version and install it",
+			Run:     cmdUpdate,
+		},
+		{
 			Name:    "exit",
 			Aliases: []string{"quit"},
 			Usage:   "/exit",
@@ -309,6 +315,27 @@ func cmdClear(m *Model, _ []string) tea.Cmd {
 	m.messages = nil
 	m.refresh()
 	return nil
+}
+
+// cmdUpdate installs a release the startup check already found, and otherwise
+// checks first. It works with the checker switched off — running /update is a
+// clear enough request to ask GitHub this once.
+func cmdUpdate(m *Model, _ []string) tea.Cmd {
+	switch {
+	case m.updating:
+		m.addSystem("An update is already running.")
+		return nil
+	case m.updateInstalled:
+		m.addSystem(fmt.Sprintf(
+			"%s is installed — restart DigiCLI to use it.", m.latest.Version))
+		return nil
+	case m.updateAvailable:
+		return m.startUpgrade()
+	}
+
+	m.checking = true
+	m.addSystem("Checking for a new version…")
+	return checkUpdate(m.version, true)
 }
 
 func cmdExit(m *Model, _ []string) tea.Cmd {

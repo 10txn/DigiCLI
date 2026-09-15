@@ -94,6 +94,31 @@ var settingsFields = []settingField{
 		},
 	},
 	{
+		Label:   "update checks",
+		Desc:    "Ask api.github.com for the latest release at startup. Off means DigiCLI contacts nothing but your model endpoint.",
+		Options: []string{"on", "off"},
+		Get: func(c *config.Config) string {
+			if c.UpdateCheck {
+				return "on"
+			}
+			return "off"
+		},
+		Set: func(c *config.Config, v string) error {
+			switch v {
+			case "on":
+				c.UpdateCheck = true
+			case "off":
+				c.UpdateCheck = false
+			default:
+				return fmt.Errorf("update checks are either on or off")
+			}
+			// Setting it here answers the first-run question too, so nobody
+			// who has been to this row is asked about it again.
+			c.UpdatePrompted = true
+			return nil
+		},
+	},
+	{
 		Label:  "claude api key",
 		Desc:   "Stored in plain text in ~/.digicli/config.json (file mode 0600).",
 		Secret: true,
@@ -195,6 +220,10 @@ func (s *settingsModel) resize(width, height int) {
 	}
 
 	s.viewport.Height = rows
+	// The rows go in before scrolling: a viewport with no content clamps every
+	// offset to zero, so ensureVisible would silently do nothing the first
+	// time the pane is sized. View sets them again with the cursor drawn in.
+	s.viewport.SetContent(s.rows())
 	s.ensureVisible()
 }
 

@@ -94,6 +94,12 @@ var (
 	contextWarnStyle = lipgloss.NewStyle().
 				Foreground(colorError).
 				Bold(true)
+
+	// The update note in the corner of the status bar. Accent rather than a
+	// warning colour: a new release is an offer, not a problem.
+	updateBadgeStyle = lipgloss.NewStyle().
+				Foreground(colorAccent).
+				Bold(true)
 )
 
 func badge(color lipgloss.TerminalColor) lipgloss.Style {

@@ -34,7 +34,7 @@ to start DigiCLI run it with the `digicli` command in any directory
 
 - **Local** — DigiCLI is designed to run 100% locally (UNLESS YOU USE NON LOCAL MODELS WITH DIGICLI)
 
-- **Privacy** — DigiCLI is dedicated to maintaining user privacy. We do not send telemtry or anything of the sort. The only connection is to your models endpoint.
+- **Privacy** — DigiCLI is dedicated to maintaining user privacy. We do not send telemtry or anything of the sort. The only connection is to your models endpoint and api.github.com if you enable auto update checking.
 
 - **Mode Selection** — Choose between plan, manual, or auto modes 
 
@@ -46,7 +46,9 @@ to start DigiCLI run it with the `digicli` command in any directory
 - Interactive terminal chat with streaming responses
 - Mode switching (plan/manual/auto) via Tab key
 - File reading and directory listing, sandboxed to the start directory
--Easy model switching and configuration
+- Easy model switching and configuration
+- Interactive settings ui
+- Auto update checking
 
 ### Supported Models
 - **Local** — DigiCLI is designed to support all models running via ollama. 

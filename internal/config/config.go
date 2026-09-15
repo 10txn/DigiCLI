@@ -40,6 +40,15 @@ type Config struct {
 	ContextWindow int `json:"contextWindow"`
 	// APIKeys is keyed by provider name ("claude", "openai").
 	APIKeys map[string]string `json:"apiKeys"`
+	// UpdateCheck turns on the startup check for a newer release. It is the
+	// one thing DigiCLI contacts that is not the model endpoint, so it stays
+	// off until the user says otherwise.
+	UpdateCheck bool `json:"updateCheck"`
+	// UpdatePrompted records that the question has been answered, in the
+	// first-run prompt or in the settings pane. A fresh config has both of
+	// these false, which is what makes DigiCLI ask rather than assume — and
+	// which asks existing users too, since their config predates the field.
+	UpdatePrompted bool `json:"updatePrompted"`
 }
 
 // New returns a Config populated with defaults.

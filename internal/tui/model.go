@@ -13,6 +13,7 @@ import (
 	"github.com/10txn/digicli/internal/llm"
 	"github.com/10txn/digicli/internal/tool"
 	"github.com/10txn/digicli/internal/types"
+	"github.com/10txn/digicli/internal/update"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,6 +37,10 @@ type view int
 const (
 	viewChat view = iota
 	viewSettings
+	// viewUpdateConsent is the first-run question about update checking. It
+	// is shown before anything else and cannot be reached again: the answer
+	// is saved, and /settings owns it from then on.
+	viewUpdateConsent
 )
 
 // Model is the root Bubble Tea model.
@@ -78,13 +83,30 @@ type Model struct {
 	// commands is the slash-command palette shown while typing a command.
 	commands palette
 
+	// Update state. version is what this build was stamped with; latest is
+	// filled in by a successful check, and the three flags decide what the
+	// status bar says about it.
+	version         string
+	latest          update.Release
+	checking        bool
+	updateAvailable bool
+	updating        bool
+	// updateInstalled marks an upgrade that has been written to disk but
+	// cannot apply until the session restarts.
+	updateInstalled bool
+	// quitConfirmed records that quitting during an update has been asked
+	// about once already.
+	quitConfirmed bool
+
 	// err holds a problem worth reporting on stderr after the TUI exits,
 	// such as a failure to save the config.
 	err error
 }
 
-// New builds the initial model and seeds the welcome message.
-func New(cfg *config.Config) *Model {
+// New builds the initial model and seeds the welcome message. version is the
+// build stamp from main, which the update check compares against the latest
+// release.
+func New(cfg *config.Config, version string) *Model {
 	input := textinput.New()
 	input.Placeholder = "Ask anything, or type /help"
 	input.Prompt = "› "
@@ -96,6 +118,13 @@ func New(cfg *config.Config) *Model {
 		cfg:      cfg,
 		input:    input,
 		settings: newSettings(cfg),
+		version:  version,
+	}
+
+	// A config that has never answered the update question asks it before the
+	// session starts, rather than checking silently or never mentioning it.
+	if !cfg.UpdatePrompted {
+		m.view = viewUpdateConsent
 	}
 
 	// Tools are confined to the directory DigiCLI was started in.
@@ -123,6 +152,12 @@ func welcome() string {
 func (m *Model) Err() error { return m.err }
 
 func (m *Model) Init() tea.Cmd {
+	// The check waits for an answer when the prompt is up; answering it
+	// starts one.
+	if m.view != viewUpdateConsent && m.cfg.UpdateCheck {
+		m.checking = true
+		return tea.Batch(textinput.Blink, checkUpdate(m.version, false))
+	}
 	return textinput.Blink
 }
 
@@ -149,6 +184,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case toolsDoneMsg:
 		return m, m.handleToolsDone(msg)
 
+	case updateCheckedMsg:
+		return m, m.handleUpdateChecked(msg)
+
+	case updateRanMsg:
+		return m, m.handleUpdateRan(msg)
+
 	case tea.KeyMsg:
 		// Ctrl+C interrupts a turn in progress — streaming or running the
 		// tools it asked for — and otherwise quits from anywhere,
@@ -160,10 +201,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.quit()
 		}
-		if m.view == viewSettings {
+		switch m.view {
+		case viewUpdateConsent:
+			return m, m.handleConsentKey(msg)
+		case viewSettings:
 			closed, cmd := m.settings.Update(msg)
 			if closed {
-				m.closeSettings()
+				return m, m.closeSettings()
 			}
 			return m, cmd
 		}
@@ -249,8 +293,11 @@ func (m *Model) View() string {
 		return fmt.Sprintf("Terminal too small — need at least %d×%d, have %d×%d.",
 			minWidth, minHeight, m.width, m.height)
 	}
-	if m.view == viewSettings {
+	switch m.view {
+	case viewSettings:
 		return m.settings.View()
+	case viewUpdateConsent:
+		return m.consentView()
 	}
 	return strings.Join([]string{
 		m.headerView(),
@@ -362,6 +409,20 @@ func (m *Model) statusView() string {
 		hint = "ctrl+c interrupts"
 	}
 	right := hintStyle.Render(hint)
+
+	// An available update is the more interesting thing to have in the corner
+	// than a hint the user has already read, so the hint is what goes when
+	// the two cannot both fit — by the one column of gap the padding below
+	// insists on, not merely by width.
+	if badge := m.updateBadge(); badge != "" {
+		both := badge + sep + right
+		if lipgloss.Width(left)+lipgloss.Width(both)+1 <= available {
+			right = both
+		} else {
+			right = badge
+		}
+	}
+
 	gap := available - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		// No room for the hint; pad out to the full width instead.
@@ -476,13 +537,21 @@ func (m *Model) openSettings() {
 }
 
 // closeSettings saves whatever was changed in the pane and returns to chat.
-func (m *Model) closeSettings() {
+// Switching update checks on there is the one change that has something to do
+// straight away, so it starts a check rather than waiting for the next start.
+func (m *Model) closeSettings() tea.Cmd {
 	m.view = viewChat
 	if err := m.cfg.Save(); err != nil {
 		m.addSystem(errorStyle.Render("Could not save settings: " + err.Error()))
-		return
+		return nil
 	}
 	m.addSystem("Settings saved.")
+
+	if m.cfg.UpdateCheck && !m.checking && m.latest.Version == "" {
+		m.checking = true
+		return checkUpdate(m.version, false)
+	}
+	return nil
 }
 
 // append adds a message and scrolls to it.
@@ -507,6 +576,16 @@ func (m *Model) refresh() {
 // quit persists settings that the session may have changed, then stops the
 // program. A save failure is surfaced on stderr by main rather than lost.
 func (m *Model) quit() tea.Cmd {
+	// Leaving takes the package manager doing the upgrade down with it: it
+	// writes its output to a pipe this process owns. That is worth asking
+	// about once, rather than discovering it afterwards.
+	if m.updating && !m.quitConfirmed {
+		m.quitConfirmed = true
+		m.addSystem("An update is still installing. Quit again to stop waiting for " +
+			"it — the upgrade would be interrupted, and may need running again.")
+		return nil
+	}
+
 	if m.cancel != nil {
 		m.cancel()
 	}

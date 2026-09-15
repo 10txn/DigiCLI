@@ -72,7 +72,7 @@ func run() error {
 		return err
 	}
 
-	model := tui.New(cfg)
+	model := tui.New(cfg, version)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		return err
