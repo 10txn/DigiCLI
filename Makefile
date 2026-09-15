@@ -9,7 +9,12 @@ LDFLAGS := -X main.version=$(VERSION)
 
 REPO   := 10txn/digicli
 
-.PHONY: all build run test fmt vet tidy clean release install uninstall formula
+# The npm dist-tag to publish under. A prerelease needs its own, e.g.
+# make npm-publish VERSION=v0.2.0-rc.1 NPM_TAG=next
+NPM_TAG ?= latest
+
+.PHONY: all build run test fmt vet tidy clean release install uninstall formula \
+	npm-dist npm-check npm-publish
 
 all: build
 
@@ -53,8 +58,31 @@ release: clean
 	GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o $(DIST)/$(BINARY)-linux-arm64   $(CMD)
 	GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o $(DIST)/$(BINARY)-linux-amd64   $(CMD)
 	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o $(DIST)/$(BINARY)-windows-amd64.exe $(CMD)
+	GOOS=windows GOARCH=arm64 go build -trimpath -ldflags="-s -w $(LDFLAGS)" -o $(DIST)/$(BINARY)-windows-arm64.exe $(CMD)
 	cd $(DIST) && shasum -a 256 * > SHA256SUMS
 	@echo "$(DIST)/ built at $(VERSION) — upload these with the GitHub release"
+
+# npm packaging: one wrapper package plus a binary package per platform, all
+# generated into dist/npm. See scripts/npm-dist.sh for the layout. These want a
+# real tag, so on an untagged commit pass one: make npm-dist VERSION=v0.1.2
+npm-dist: release
+	@scripts/npm-dist.sh $(VERSION)
+
+# What npm would upload, without uploading it.
+npm-check: npm-dist
+	@for pkg in $(DIST)/npm/*/; do \
+		(cd $$pkg && npm publish --dry-run --access public --tag $(NPM_TAG)); \
+	done
+
+# Platform packages first — the wrapper depends on them by exact version, so
+# publishing it first leaves a window where `npm i -g digicli` cannot resolve.
+npm-publish: npm-dist
+	@for pkg in $(DIST)/npm/*/; do \
+		case $$pkg in */npm/digicli/) continue;; esac; \
+		(cd $$pkg && npm publish --access public --tag $(NPM_TAG)); \
+	done
+	@cd $(DIST)/npm/digicli && npm publish --access public --tag $(NPM_TAG)
+	@echo "published digicli $(VERSION) — verify with: npm i -g digicli && digicli --version"
 
 # Point the Homebrew formula at a tag. The tag has to be pushed first: the
 # checksum is of GitHub's source tarball for it, which does not exist until
