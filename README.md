@@ -16,7 +16,7 @@ brew tap 10txn/digicli && brew install digicli
 
 ```bash
 # Suggested install for windows
-npm i -g digicli
+npm i -g @digicli/cli
 ```
 
 # Start
