@@ -108,3 +108,67 @@ func TestPromptHandlesMissingFacts(t *testing.T) {
 		}
 	}
 }
+
+// Manual mode's prompt has to make clear whose job the approval is. Told only
+// that changes are "proposed" for "approval", a model asks permission in the
+// chat, is told yes, and asks again — the confirmation it is waiting for is not
+// one the chat can give, because DigiCLI raises the prompt off the back of the
+// call. The turn deadlocks on a misunderstanding the prompt created.
+func TestManualModeTellsTheModelToCallRatherThanAsk(t *testing.T) {
+	got := SystemPrompt(Session{
+		Mode:  types.ModeManual,
+		Tools: []string{"read_file", "write_file"},
+	})
+
+	for _, want := range []string{
+		"Call the tool",
+		"not yours to write",
+		"do not ask whether to go ahead",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the manual prompt does not say %q:\n%s", want, got)
+		}
+	}
+
+	// The wording that caused it must not come back.
+	for _, unwanted := range []string{"You may propose", "say plainly what each does"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("the prompt still invites asking in the chat: %q", unwanted)
+		}
+	}
+}
+
+// A model that thinks the user fetches files for it will ask them to paste one
+// and then wait, which is the same deadlock by another route.
+func TestToolPromptSaysResultsComeBackAutomatically(t *testing.T) {
+	got := SystemPrompt(Session{
+		Mode:  types.ModeManual,
+		Tools: []string{"read_file", "write_file"},
+	})
+
+	for _, want := range []string{"comes back to you automatically", "Never ask the user to paste a file"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the prompt does not say %q:\n%s", want, got)
+		}
+	}
+}
+
+// Every mode still has to say which one is active, and a session with no tools
+// must not be told to call any.
+func TestModePromptsStayDistinct(t *testing.T) {
+	for mode, want := range map[types.Mode]string{
+		types.ModePlan:   "PLAN",
+		types.ModeManual: "MANUAL",
+		types.ModeAuto:   "AUTO",
+	} {
+		got := SystemPrompt(Session{Mode: mode, Tools: []string{"read_file"}})
+		if !strings.Contains(got, want) {
+			t.Errorf("%v: prompt does not name the mode:\n%s", mode, got)
+		}
+	}
+
+	bare := SystemPrompt(Session{Mode: types.ModeManual})
+	if strings.Contains(bare, "Call the tool.") && !strings.Contains(bare, "no tools") {
+		t.Error("a session with no tools was told to call one")
+	}
+}

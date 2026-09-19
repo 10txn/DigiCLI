@@ -33,7 +33,7 @@ var skipDirs = map[string]bool{
 // Read returns the contents of a file inside the sandbox, truncated to
 // MaxReadBytes. The bool reports whether truncation happened.
 func (s *Sandbox) Read(path string) (string, bool, error) {
-	resolved, err := s.Resolve(path)
+	resolved, err := s.access(path, false)
 	if err != nil {
 		return "", false, err
 	}
@@ -78,7 +78,7 @@ func (s *Sandbox) List(path string) ([]Entry, error) {
 	if strings.TrimSpace(path) == "" {
 		path = "."
 	}
-	resolved, err := s.Resolve(path)
+	resolved, err := s.access(path, false)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,9 @@ var (
 	colorTool   = lipgloss.AdaptiveColor{Light: "#8250DF", Dark: "#B392F0"}
 	colorError  = lipgloss.AdaptiveColor{Light: "#C92A2A", Dark: "#FF6B6B"}
 	colorBorder = lipgloss.AdaptiveColor{Light: "#CED4DA", Dark: "#3A3F47"}
+	// Approval borrows manual mode's amber: the prompt and the mode that
+	// causes it should look like the same thing.
+	colorApproval = lipgloss.AdaptiveColor{Light: "#E8590C", Dark: "#FFA94D"}
 )
 
 var (
@@ -100,6 +103,36 @@ var (
 	updateBadgeStyle = lipgloss.NewStyle().
 				Foreground(colorAccent).
 				Bold(true)
+)
+
+// The approval prompt. It has to stand out from the tool lines around it
+// without reading as an error: nothing has gone wrong, something is waiting.
+var (
+	approvalTitleStyle = lipgloss.NewStyle().
+				Foreground(colorApproval).
+				Bold(true)
+
+	// Leaving the working directory is the part of the question most worth
+	// noticing, so it gets the error colour even though the prompt does not.
+	approvalOutsideStyle = lipgloss.NewStyle().
+				Foreground(colorError).
+				Bold(true)
+
+	approvalBodyStyle = lipgloss.NewStyle()
+
+	approvalKeysStyle = lipgloss.NewStyle().
+				Foreground(colorApproval)
+
+	// The line-number gutter in the approval viewer: present enough to count
+	// by, quiet enough not to compete with the code beside it.
+	viewerGutterStyle = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
+	approvalGrantedStyle = lipgloss.NewStyle().
+				Foreground(colorAI)
+
+	approvalDeniedStyle = lipgloss.NewStyle().
+				Foreground(colorMuted)
 )
 
 func badge(color lipgloss.TerminalColor) lipgloss.Style {

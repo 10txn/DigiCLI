@@ -308,24 +308,52 @@ func TestEnterIsIgnoredWhileToolsRun(t *testing.T) {
 }
 
 // Results from an interrupted round must not land in the history, and must not
-// hand the turn back to the model.
+// hand the turn back to the model. A round runs one call at a time now, so
+// this covers both halves: a call that finishes after the interrupt, and the
+// end of the round arriving behind it.
 func TestInterruptedToolResultsAreDiscarded(t *testing.T) {
 	m := toolingModel(t)
 	seq := m.streamSeq
+	finished := call("read_file", map[string]string{"path": "main.go"})
 
 	m.interrupt()
-	cmd := m.handleToolsDone(toolsDoneMsg{
-		seq:     seq,
-		results: []types.Message{toolResult(call("read_file", map[string]string{}), "package main", "⚙ read_file")},
-	})
 
-	if cmd != nil {
+	if cmd := m.handleToolRan(toolRanMsg{
+		seq:    seq,
+		call:   finished,
+		result: toolResult(finished, "package main", "⚙ read_file"),
+	}); cmd != nil {
+		t.Error("a result from an interrupted round carried the round on")
+	}
+	if cmd := m.handleToolsDone(toolsDoneMsg{seq: seq}); cmd != nil {
 		t.Error("an interrupted round of tools carried on into another request")
 	}
+
 	for _, msg := range m.messages {
 		if msg.Role == types.RoleTool {
 			t.Fatalf("a discarded tool result was appended: %+v", msg)
 		}
+	}
+}
+
+// An interrupt while a call is waiting on the user has to take the question
+// down with the round, rather than leaving a prompt on screen that no longer
+// has anything behind it.
+func TestInterruptClearsAPendingApproval(t *testing.T) {
+	m, _, _ := toolModel(t, types.ModeManual)
+
+	drive(t, m, call("write_file", map[string]string{"path": "new.go", "content": "package new\n"}))
+	if m.approval == nil {
+		t.Fatal("nothing was put to the user")
+	}
+
+	m.interrupt()
+
+	if m.approval != nil {
+		t.Error("the prompt survived the interrupt")
+	}
+	if m.awaitingApproval() {
+		t.Error("the session still thinks it is waiting on an answer")
 	}
 }
 
@@ -379,10 +407,10 @@ func TestProviderSelection(t *testing.T) {
 func TestStreamCursorOnlyWhileStreaming(t *testing.T) {
 	msgs := []types.Message{types.NewMessage(types.RoleAssistant, "text")}
 
-	if got := renderMessages(msgs, 40, true); !strings.Contains(got, streamCursor) {
+	if got := renderMessages(msgs, 40, true, nil); !strings.Contains(got, streamCursor) {
 		t.Error("no cursor while streaming")
 	}
-	if got := renderMessages(msgs, 40, false); strings.Contains(got, streamCursor) {
+	if got := renderMessages(msgs, 40, false, nil); strings.Contains(got, streamCursor) {
 		t.Error("cursor left behind after the reply finished")
 	}
 }

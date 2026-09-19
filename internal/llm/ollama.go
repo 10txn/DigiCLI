@@ -225,7 +225,11 @@ func toToolCalls(in []ollamaToolCall) []types.ToolCall {
 	}
 	out := make([]types.ToolCall, 0, len(in))
 	for i, call := range in {
-		args := call.Function.Arguments
+		// Normalised here rather than only at the point of use, because the
+		// call goes back into the history too: arguments that stayed
+		// double-encoded would be echoed to the model in that shape next turn,
+		// teaching it to keep producing them.
+		args := types.NormalizeArguments(call.Function.Arguments)
 		if len(args) == 0 {
 			args = json.RawMessage(`{}`)
 		}

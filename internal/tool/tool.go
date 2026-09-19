@@ -18,9 +18,32 @@ type Tool interface {
 	// error is shown to the model too — it is usually recoverable, and the
 	// model should get the chance to correct itself.
 	Run(ctx context.Context, call types.ToolCall) (string, error)
-	// Mutates reports whether the tool changes anything outside DigiCLI.
-	// Read-only tools run in every mode; mutating ones are gated.
-	Mutates() bool
+	// Reach reports what this particular call would touch, before it runs,
+	// so the mode policy can rule on the call rather than on the tool. The
+	// same tool reads inside the working directory on one call and outside
+	// it on the next, and those are not the same question.
+	Reach(call types.ToolCall) types.Reach
+}
+
+// Preview is what a call would do while it is still only a proposal, split by
+// how much room it needs. Approving a write means little without seeing it, but
+// a whole file pasted into the transcript buries the question it is asking — so
+// the prompt shows Summary, and Body waits behind a key for anyone who wants to
+// read it.
+type Preview struct {
+	// Summary is the one line the decision is usually made on: what happens to
+	// which file, and how much of it changes.
+	Summary string
+	// Body is the full proposal — the file as it would be written. Empty for a
+	// call with nothing to show beyond its summary.
+	Body string
+}
+
+// Previewer is a tool that can describe a call before it runs. write_file
+// implements this; a tool with nothing to add beyond its name and path does
+// not have to.
+type Previewer interface {
+	Preview(call types.ToolCall) Preview
 }
 
 // Registry holds the tools available in a session.

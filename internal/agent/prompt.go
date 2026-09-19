@@ -4,6 +4,7 @@ package agent
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,13 +49,26 @@ var modePolicies = map[types.Mode]string{
 Analyse and explain. Do not offer to modify files or run commands; describe what
 you would change and let the user decide.`,
 
+	// The obvious phrasing here — that changes are "proposed" for "approval" —
+	// reads to a model as an instruction to ask permission in the chat. It then
+	// describes the change, asks whether to proceed, is told yes, and asks
+	// again, because the answer it is waiting for is not one the chat can give:
+	// DigiCLI raises the approval prompt itself, off the back of the call. So
+	// this says whose job that is, in those words.
 	types.ModeManual: `Mode: MANUAL (approval required).
-You may propose file changes and commands. Every one is shown to the user for
-approval before it runs, so say plainly what each does and why.`,
+Call the tool. DigiCLI shows the user what the call would do and asks them to
+approve it — that prompt is not yours to write, and a question you ask in the
+chat cannot be answered with an approval. Do not describe a change and wait for
+permission, and do not ask whether to go ahead: make the call. Their answer
+reaches you as the call's result, and a refusal reaches you the same way, which
+is the point at which to ask what they would prefer instead.`,
 
 	types.ModeAuto: `Mode: AUTO (unattended).
-You may act without asking. Work in small steps and report what you did after
-each one.`,
+You may act without asking, including outside the working directory. Nobody is
+being shown what you are about to do, so the care that normally comes from the
+approval prompt has to come from you: work in small steps, report what you did
+after each one, and stay inside the working directory unless the user has asked
+for something that cannot be done there.`,
 }
 
 // SystemPrompt builds the prompt for a session.
@@ -94,7 +108,7 @@ func SystemPrompt(s Session) string {
 	b.WriteString("If you do not know something about this session, say so rather than inventing it.\n")
 
 	b.WriteString("\n")
-	b.WriteString(capabilities(s.Tools, s.Cwd != ""))
+	b.WriteString(capabilities(s.Tools, s.Cwd != "", s.Mode))
 
 	if policy, ok := modePolicies[s.Mode]; ok {
 		b.WriteString("\n\n")
@@ -110,17 +124,33 @@ func SystemPrompt(s Session) string {
 // capabilities states what the model can actually do right now. hasCwd guards
 // the reference back to the working directory, so the prompt never points at a
 // fact it did not state.
-func capabilities(tools []string, hasCwd bool) string {
+func capabilities(tools []string, hasCwd bool, mode types.Mode) string {
 	if len(tools) > 0 {
 		var b strings.Builder
 		b.WriteString("Tools available to you: " + strings.Join(tools, ", ") + ".\n")
-		b.WriteString("Use them instead of asking the user to paste code, and instead of\n")
-		b.WriteString("guessing at a file's contents. Paths are relative to the working\n")
-		b.WriteString("directory")
+		b.WriteString("Call them yourself: a result comes back to you automatically, in this\n")
+		b.WriteString("same turn. Never ask the user to paste a file, to run a tool for you,\n")
+		b.WriteString("or to tell you what a call returned — they are not standing between\n")
+		b.WriteString("you and the tools.\n")
+		b.WriteString("Use them instead of guessing at a file's contents. Paths are relative\n")
+		b.WriteString("to the working directory")
 		if hasCwd {
 			b.WriteString(" named above")
 		}
-		b.WriteString("; you cannot reach anything outside it.")
+		b.WriteString(".\n")
+		b.WriteString(boundary(mode))
+
+		// Worth stating even when write_file is not wired up, since it is
+		// the mistake that costs the user their file rather than their time:
+		// there is no patching, so a partial write is a deletion.
+		if slices.Contains(tools, "write_file") {
+			b.WriteString("\n\nwrite_file replaces a file completely. To change an existing file,\n")
+			b.WriteString("read it first and send back the whole thing with your edit in it.\n")
+			b.WriteString("Sending only the lines you changed deletes everything else.")
+		}
+
+		b.WriteString("\n\n")
+		b.WriteString(refusals)
 		return b.String()
 	}
 
@@ -134,3 +164,30 @@ func capabilities(tools []string, hasCwd bool) string {
 	b.WriteString("to run themselves rather than offering to run them.")
 	return b.String()
 }
+
+// boundary tells the model what the working directory means in this mode. It
+// differs enough between the three that a single sentence would be wrong in
+// two of them, and a model told it cannot leave the directory will not try
+// even when the user has asked it to.
+func boundary(mode types.Mode) string {
+	switch mode {
+	case types.ModeAuto:
+		return "You can reach outside that directory, but treat it as the boundary of the\n" +
+			"job unless the user has pointed you somewhere else."
+	case types.ModeManual:
+		return "Anything outside that directory is put to the user for approval first, so\n" +
+			"stay inside it unless they have asked for something that cannot be."
+	default:
+		return "You cannot reach anything outside it."
+	}
+}
+
+// A small set of paths is refused whatever the mode, and no approval reaches
+// past them: credentials, the operating system's own files, shell startup
+// files, and git's internal directory. Saying so up front is cheaper than a
+// model discovering it one refusal at a time and trying to route around it.
+const refusals = `Some paths are refused in every mode, and the user cannot approve them:
+credentials such as ~/.ssh, system directories, files that run automatically
+when a shell or login session starts, and the .git directory. If you are
+refused, say what you were trying to do — do not look for another path to the
+same place.`

@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/10txn/digicli/internal/config"
+	"github.com/10txn/digicli/internal/file"
 	"github.com/10txn/digicli/internal/llm"
 	"github.com/10txn/digicli/internal/tool"
 	"github.com/10txn/digicli/internal/types"
@@ -41,6 +42,9 @@ const (
 	// is shown before anything else and cannot be reached again: the answer
 	// is saved, and /settings owns it from then on.
 	viewUpdateConsent
+	// viewApproval is the full proposal behind a pending approval — the file
+	// a write would put on disk, scrollable, and answerable from there.
+	viewApproval
 )
 
 // Model is the root Bubble Tea model.
@@ -76,12 +80,36 @@ type Model struct {
 	pendingCalls []types.ToolCall
 	// toolRounds guards against a model looping on its own tools.
 	toolRounds int
+	// run is the round of calls currently being worked through, one at a
+	// time; approval is the one of them waiting on the user, if any.
+	run      *toolRun
+	approval *pendingApproval
+	// inferredCalls marks a round whose calls were read out of a reply's prose
+	// rather than emitted or delimited, which makes a write worth asking about
+	// whatever the mode says.
+	inferredCalls bool
+	// viewer shows the pending proposal in full; viewerReady guards restoring
+	// a scroll position that belongs to a question already answered.
+	viewer      viewport.Model
+	viewerReady bool
 
 	// tools are the capabilities the model may call.
 	tools *tool.Registry
+	// sandbox is what they reach the filesystem through, kept here because
+	// approving a path outside the working directory opens it, and changing
+	// mode closes them all again.
+	sandbox *file.Sandbox
 
 	// commands is the slash-command palette shown while typing a command.
 	commands palette
+
+	// Prompt history, recalled with the arrow keys the way a shell does.
+	// historyPos indexes history while browsing and equals len(history) when
+	// not; draft holds the half-typed line that browsing away from would
+	// otherwise lose.
+	history    []string
+	historyPos int
+	draft      string
 
 	// Update state. version is what this build was stamped with; latest is
 	// filled in by a successful check, and the three flags decide what the
@@ -132,8 +160,9 @@ func New(cfg *config.Config, version string) *Model {
 	if err != nil {
 		cwd = "."
 	}
-	tools, err := buildTools(cwd)
+	tools, sandbox, err := buildTools(cwd)
 	m.tools = tools
+	m.sandbox = sandbox
 
 	m.addSystem(welcome())
 	if err != nil {
@@ -181,6 +210,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamDoneMsg:
 		return m, m.handleStreamDone(msg)
 
+	case toolRanMsg:
+		return m, m.handleToolRan(msg)
+
 	case toolsDoneMsg:
 		return m, m.handleToolsDone(msg)
 
@@ -189,6 +221,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateRanMsg:
 		return m, m.handleUpdateRan(msg)
+
+	case tea.MouseMsg:
+		// The wheel belongs to whichever pane is on top.
+		switch m.view {
+		case viewApproval:
+			var cmd tea.Cmd
+			m.viewer, cmd = m.viewer.Update(msg)
+			return m, cmd
+		case viewChat:
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		// Ctrl+C interrupts a turn in progress — streaming or running the
@@ -204,6 +250,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.view {
 		case viewUpdateConsent:
 			return m, m.handleConsentKey(msg)
+		case viewApproval:
+			return m, m.handleViewerKey(msg)
 		case viewSettings:
 			closed, cmd := m.settings.Update(msg)
 			if closed {
@@ -221,6 +269,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleChatKey(msg tea.KeyMsg) tea.Cmd {
+	// A pending approval owns the keyboard: the turn cannot go anywhere
+	// until it is answered, and typing into the input box while a write is
+	// waiting invites answering it without meaning to.
+	if m.awaitingApproval() {
+		return m.handleApprovalKey(msg)
+	}
+
 	// The palette owns navigation and selection while it is open.
 	if m.commands.active() {
 		switch msg.Type {
@@ -239,6 +294,12 @@ func (m *Model) handleChatKey(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	switch msg.Type {
+	case tea.KeyUp:
+		m.recall(-1)
+		return nil
+	case tea.KeyDown:
+		m.recall(1)
+		return nil
 	case tea.KeyCtrlD:
 		// EOF only on an empty prompt, as a shell would.
 		if m.input.Value() == "" {
@@ -298,6 +359,8 @@ func (m *Model) View() string {
 		return m.settings.View()
 	case viewUpdateConsent:
 		return m.consentView()
+	case viewApproval:
+		return m.viewerView()
 	}
 	return strings.Join([]string{
 		m.headerView(),
@@ -339,6 +402,9 @@ func (m *Model) resize(width, height int) {
 		m.viewport.Height = viewportHeight
 	}
 	m.settings.resize(width, height)
+	if m.view == viewApproval {
+		m.resizeViewer()
+	}
 	m.refresh()
 }
 
@@ -383,9 +449,14 @@ func (m *Model) statusView() string {
 		{modelStyle.Render(truncate(m.cfg.Model, available/2)), true},
 		{m.contextView(), false},
 	}
-	if m.streaming {
+	switch {
+	case m.awaitingApproval():
+		// Required: this is the one status the user has to act on, and it
+		// must not be the segment a narrow terminal drops.
+		segments = append(segments, segment{approvalTitleStyle.Render("waiting on you"), true})
+	case m.streaming:
 		segments = append(segments, segment{metaStyle.Render("streaming…"), false})
-	} else if m.busy {
+	case m.busy:
 		segments = append(segments, segment{metaStyle.Render("working…"), false})
 	}
 
@@ -405,7 +476,10 @@ func (m *Model) statusView() string {
 	}
 
 	hint := "tab mode · /help · ctrl+c quit"
-	if m.streaming || m.tooling {
+	switch {
+	case m.awaitingApproval():
+		hint = "y approve · n deny"
+	case m.streaming, m.tooling:
 		hint = "ctrl+c interrupts"
 	}
 	right := hintStyle.Render(hint)
@@ -510,6 +584,7 @@ func (m *Model) submit() tea.Cmd {
 	}
 	m.input.Reset()
 	m.commands.reset()
+	m.remember(line)
 
 	// A command is echoed so the transcript reads back correctly, but it is
 	// a local event: sending it would have the model treat "/models" as
@@ -525,9 +600,67 @@ func (m *Model) submit() tea.Cmd {
 	return m.startStream()
 }
 
+// remember adds a submitted line to the prompt history and leaves browsing.
+// An immediate repeat is not recorded twice: pressing up should step back
+// through what was asked, not through how often it was asked.
+func (m *Model) remember(line string) {
+	if line != "" && (len(m.history) == 0 || m.history[len(m.history)-1] != line) {
+		m.history = append(m.history, line)
+	}
+	m.historyPos = len(m.history)
+	m.draft = ""
+}
+
+// recall steps through the prompt history: -1 towards older lines, +1 back
+// towards the newest. Stepping past the newest restores whatever was being
+// typed when browsing started, so a half-written message is never lost to a
+// stray arrow key.
+func (m *Model) recall(delta int) {
+	if len(m.history) == 0 {
+		return
+	}
+
+	pos := m.historyPos + delta
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(m.history) {
+		pos = len(m.history)
+	}
+	if pos == m.historyPos {
+		return
+	}
+
+	// Leaving the live line for the first time: keep it to come back to.
+	if m.historyPos == len(m.history) {
+		m.draft = m.input.Value()
+	}
+
+	m.historyPos = pos
+	if pos == len(m.history) {
+		m.input.SetValue(m.draft)
+	} else {
+		m.input.SetValue(m.history[pos])
+	}
+	m.input.CursorEnd()
+	m.commands.sync(m.input.Value())
+}
+
 func (m *Model) cycleMode() {
 	m.cfg.Mode = m.cfg.Mode.Next()
+	m.modeChanged()
 	m.addSystem(fmt.Sprintf("Mode: %s", m.cfg.Mode))
+}
+
+// modeChanged takes back every path the session had opened outside the working
+// directory. A path allowed under auto must not still be allowed after the
+// user has tightened the session back to manual — changing mode is the moment
+// they say what the session may do, and it should mean the same thing in both
+// directions.
+func (m *Model) modeChanged() {
+	if m.sandbox != nil {
+		m.sandbox.Close()
+	}
 }
 
 func (m *Model) openSettings() {
@@ -541,6 +674,10 @@ func (m *Model) openSettings() {
 // straight away, so it starts a check rather than waiting for the next start.
 func (m *Model) closeSettings() tea.Cmd {
 	m.view = viewChat
+	// The pane can change the mode too, and the settings model does not know
+	// about the sandbox; re-applying unconditionally is cheaper than tracking
+	// whether it was touched, and closing grants is never the wrong thing.
+	m.modeChanged()
 	if err := m.cfg.Save(); err != nil {
 		m.addSystem(errorStyle.Render("Could not save settings: " + err.Error()))
 		return nil
@@ -564,13 +701,22 @@ func (m *Model) addSystem(content string) {
 	m.append(types.NewLocal(types.RoleSystem, content))
 }
 
-// refresh re-renders the history into the viewport and pins it to the bottom.
+// refresh re-renders the history into the viewport, following the bottom only
+// if that is where the reader already was.
+//
+// Pinning unconditionally is what made the transcript impossible to read back:
+// every chunk of a streaming reply re-rendered it and yanked the view down
+// again, so scrolling up lasted until the next token. Scrolled away, the view
+// now stays where it was put; back at the bottom, it follows along as before.
 func (m *Model) refresh() {
 	if !m.ready {
 		return
 	}
-	m.viewport.SetContent(renderMessages(m.messages, m.viewport.Width, m.streaming))
-	m.viewport.GotoBottom()
+	following := m.viewport.AtBottom()
+	m.viewport.SetContent(renderMessages(m.messages, m.viewport.Width, m.streaming, m.tools.Names()))
+	if following {
+		m.viewport.GotoBottom()
+	}
 }
 
 // quit persists settings that the session may have changed, then stops the

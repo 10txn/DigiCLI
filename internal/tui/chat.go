@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/10txn/digicli/internal/agent"
 	"github.com/10txn/digicli/internal/types"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -57,13 +58,24 @@ const streamCursor = "▍"
 // renderMessages joins the whole history into the viewport body, with a blank
 // line between entries. While streaming, the last message gets a cursor so an
 // empty or paused reply still looks alive.
-func renderMessages(msgs []types.Message, width int, streaming bool) string {
+//
+// tools names what the session can call, so a call the model wrote into its
+// reply as text can be told from code it is showing on purpose, and kept off
+// the screen. Every frame of a stream comes through here, which is what makes
+// the difference between a call being hidden and a file being typed out in
+// front of the user a character at a time.
+func renderMessages(msgs []types.Message, width int, streaming bool, tools []string) string {
 	if len(msgs) == 0 {
 		return ""
 	}
 	blocks := make([]string, 0, len(msgs))
 	for i, msg := range msgs {
 		text := msg.Text()
+		// Only a reply is filtered: a tool result carries its own summary, and
+		// what the user typed is theirs to see verbatim.
+		if msg.Role == types.RoleAssistant && msg.Display == "" {
+			text = strings.TrimSpace(agent.Visible(text, tools))
+		}
 		if streaming && i == len(msgs)-1 && msg.Role == types.RoleAssistant {
 			text += streamCursor
 		}

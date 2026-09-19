@@ -73,7 +73,11 @@ func run() error {
 	}
 
 	model := tui.New(cfg, version)
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	// Mouse reporting is on for the scroll wheel, which is how anybody reads
+	// back through a conversation. It costs the terminal's own click-to-select:
+	// most emulators keep it on shift-drag, which is the usual bargain for a
+	// full-screen program.
+	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := program.Run(); err != nil {
 		return err
 	}

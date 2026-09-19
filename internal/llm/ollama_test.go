@@ -244,3 +244,128 @@ func TestListModelsParsesDetails(t *testing.T) {
 		t.Errorf("unexpected model: %+v", got)
 	}
 }
+
+// toolFrames is a tool call as Ollama streams one: its own frame, then the
+// frame that ends the reply.
+func toolFrames(call string) string {
+	return `{"message":{"role":"assistant","content":"","tool_calls":[` + call + `]},"done":false}` + "\n" +
+		`{"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop"}` + "\n"
+}
+
+// serveRaw replays literal frames, so these tests exercise the wire shapes
+// Ollama actually produces rather than whatever our own structs encode.
+func serveRaw(t *testing.T, body string) Stream {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+
+	stream, err := NewOllama(server.URL, "m").Chat(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	t.Cleanup(func() { stream.Close() })
+	return stream
+}
+
+// firstCall drains a stream and returns the single tool call it carried.
+func firstCall(t *testing.T, stream Stream) types.ToolCall {
+	t.Helper()
+	var calls []types.ToolCall
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		calls = append(calls, chunk.ToolCalls...)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(calls))
+	}
+	return calls[0]
+}
+
+func TestChatParsesAToolCall(t *testing.T) {
+	stream := serveRaw(t, toolFrames(
+		`{"function":{"name":"write_file","arguments":{"path":"new.go","content":"package new\n"}}}`))
+
+	got := firstCall(t, stream)
+	if got.Name != "write_file" {
+		t.Errorf("got tool %q, want write_file", got.Name)
+	}
+	if path, ok := got.StringArg("path"); !ok || path != "new.go" {
+		t.Errorf("path = %q (ok=%v), want new.go", path, ok)
+	}
+	if content, ok := got.StringArg("content"); !ok || content != "package new\n" {
+		t.Errorf("content = %q (ok=%v)", content, ok)
+	}
+	if got.ID == "" {
+		t.Error("a call with no id of its own was not given one")
+	}
+}
+
+// Arguments encoded into a string rather than sent as an object. Undecoded,
+// every argument reads as missing and a perfectly good write comes back as
+// "write_file needs a path argument".
+func TestChatParsesDoubleEncodedArguments(t *testing.T) {
+	stream := serveRaw(t, toolFrames(
+		`{"function":{"name":"write_file","arguments":"{\"path\":\"new.go\",\"content\":\"package new\\n\"}"}}`))
+
+	got := firstCall(t, stream)
+	if path, ok := got.StringArg("path"); !ok || path != "new.go" {
+		t.Errorf("path = %q (ok=%v), want new.go", path, ok)
+	}
+	if content, ok := got.StringArg("content"); !ok || content != "package new\n" {
+		t.Errorf("content = %q (ok=%v), want the file contents", content, ok)
+	}
+	// The call goes back into the history too, so it must be normalised there
+	// rather than only where it is read.
+	if string(got.Arguments[0]) == `"` {
+		t.Errorf("arguments are still double-encoded: %s", got.Arguments)
+	}
+}
+
+// The final frame can carry a call as well as done, and the call must not be
+// lost to the end of the reply.
+func TestChatKeepsAToolCallOnTheFinalFrame(t *testing.T) {
+	stream := serveRaw(t,
+		`{"message":{"role":"assistant","content":"Writing it.","tool_calls":[{"function":{"name":"write_file","arguments":{"path":"new.go","content":"x"}}}]},"done":true}`+"\n")
+
+	if got := firstCall(t, stream); got.Name != "write_file" {
+		t.Errorf("got tool %q, want write_file", got.Name)
+	}
+}
+
+// Several calls in one frame keep their own identities, or their results
+// cannot be matched back to them.
+func TestChatParsesSeveralToolCalls(t *testing.T) {
+	stream := serveRaw(t, toolFrames(
+		`{"id":"call_1","function":{"name":"read_file","arguments":{"path":"a.go"}}},`+
+			`{"function":{"name":"write_file","arguments":{"path":"b.go","content":"y"}}}`))
+
+	var calls []types.ToolCall
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		calls = append(calls, chunk.ToolCalls...)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("got %d calls, want 2", len(calls))
+	}
+	if calls[0].ID != "call_1" {
+		t.Errorf("an id Ollama supplied was discarded: %q", calls[0].ID)
+	}
+	if calls[0].ID == calls[1].ID {
+		t.Errorf("both calls share the id %q", calls[0].ID)
+	}
+}

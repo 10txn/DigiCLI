@@ -182,6 +182,14 @@ func (m *Model) handleStreamDone(msg streamDoneMsg) tea.Cmd {
 		return nil
 	}
 
+	// A reply that emitted no call of its own may still have written one out
+	// as text, which is how a write turns into a wall of JSON in the
+	// transcript and no file on disk. Recovered calls are proposals like any
+	// other: they go through the policy and the approval prompt below.
+	if len(calls) == 0 {
+		calls = m.recoverToolCalls()
+	}
+
 	if len(calls) == 0 {
 		m.dropEmptyReply()
 		return nil
@@ -194,6 +202,36 @@ func (m *Model) handleStreamDone(msg streamDoneMsg) tea.Cmd {
 	m.tooling = true
 	m.refresh()
 	return m.runTools(calls, msg.seq)
+}
+
+// recoverToolCalls rescues a call the model wrote into its reply as text. The
+// call is taken out of the visible reply, so the user sees the tool line — or
+// the approval prompt — rather than the raw JSON the model meant to be a call,
+// and so the reply that goes back into the history reads as the model asking
+// for a tool rather than talking about one.
+func (m *Model) recoverToolCalls() []types.ToolCall {
+	if len(m.messages) == 0 {
+		return nil
+	}
+	last := &m.messages[len(m.messages)-1]
+	if last.Role != types.RoleAssistant || last.Content == "" {
+		return nil
+	}
+
+	recovered, ok := agent.Recover(last.Content, m.tools.Names())
+	if !ok {
+		return nil
+	}
+
+	log.Printf("stream: recovered %d tool call(s) written as text (delimited=%v)",
+		len(recovered.Calls), recovered.Delimited)
+	last.Content = recovered.Text
+	// An inferred recovery is a judgement about prose, so a change to disk is
+	// put to the user even in auto mode: being wrong there is a file replaced
+	// on the strength of a fenced code block.
+	m.inferredCalls = !recovered.Delimited
+	m.refresh()
+	return recovered.Calls
 }
 
 // attachToolCalls records the calls on the assistant turn that requested them,
@@ -255,11 +293,16 @@ func (m *Model) finishStream() {
 // tools a finished reply asked for.
 func (m *Model) interrupt() {
 	// Bumping the sequence orphans anything still in flight — a chunk from
-	// the stream, or the results of a round of tools that is still running.
+	// the stream, or a tool call that is still running.
 	m.streamSeq++
 	m.tooling = false
 	m.pendingCalls = nil
 	m.finishStream()
+
+	// A round stopped part-way through has answered some of the assistant
+	// turn's calls and not others, which is not a coherent exchange to send
+	// back, so its results come out of the history along with the calls.
+	m.abandonRound()
 
 	// Results that will now be discarded leave the assistant turn asking
 	// for tools with nothing answering it, which is not a coherent exchange
